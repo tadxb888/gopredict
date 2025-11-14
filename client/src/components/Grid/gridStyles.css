@@ -1,0 +1,57 @@
+/* Custom AG Grid Theme for GoPredict */
+.ag-theme-gopredict {
+  --ag-background-color: #21222C;
+  --ag-foreground-color: #68FF8E;
+  --ag-header-background-color: #21222C;
+  --ag-header-foreground-color: #68FF8E;
+  --ag-odd-row-background-color: #21222C;
+  --ag-row-hover-color: #2a2b36;
+  --ag-border-color: #429356;
+  --ag-cell-horizontal-border: solid #429356;
+  --ag-row-border-color: #429356;
+  --ag-font-family: 'IBM Plex Mono', monospace;
+  --ag-font-size: 12px;
+  --ag-header-font-size: 14px;
+  --ag-header-font-weight: 700;
+  --ag-borders: solid 1px;
+  --ag-borders-row: solid 1px;
+  --ag-borders-side-button: none;
+  
+  /* Ensure icons display correctly */
+  --ag-icon-font-family: agGridAlpine;
+}
+
+.ag-theme-gopredict .ag-header-cell {
+  border-right: 1px solid #429356;
+}
+
+.ag-theme-gopredict .ag-cell {
+  color: #50F178;
+  border-right: 1px solid #429356;
+}
+
+.ag-theme-gopredict .ag-root-wrapper {
+  border: 1px solid #429356;
+}
+
+/* Ensure filter panel styling */
+.ag-theme-gopredict .ag-filter {
+  background-color: #21222C;
+  color: #68FF8E;
+}
+
+.ag-theme-gopredict .ag-menu {
+  background-color: #21222C;
+  border: 1px solid #429356;
+}
+
+.ag-theme-gopredict .ag-input-field-input,
+.ag-theme-gopredict .ag-select {
+  background-color: #2a2b36;
+  color: #68FF8E;
+  border-color: #429356;
+}
+
+.ag-theme-gopredict .ag-checkbox-input-wrapper {
+  color: #68FF8E;
+}
