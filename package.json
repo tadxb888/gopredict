@@ -41,5 +41,8 @@
     "postgresql"
   ],
   "author": "Your Organization",
-  "license": "PROPRIETARY"
+  "license": "PROPRIETARY",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
 }

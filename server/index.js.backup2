@@ -13,13 +13,10 @@ const { cleanupExpired } = require('./services/authService');
 const pollingService = require('./services/pollingService');
 
 // Import routes
-// Import routes
 const authRoutes = require('./routes/auth');
 const dataRoutes = require('./routes/data');
 const userRoutes = require('./routes/users');
-const nexdayRoutes = require('./routes/nexday');
 
-// Initialize express app
 // Initialize express app
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -79,7 +76,6 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/nexday', nexdayRoutes);
 
 // 404 handler
 app.use(notFoundHandler);

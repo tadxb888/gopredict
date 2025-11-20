@@ -4,32 +4,102 @@ const logger = require('../utils/logger');
 const { sendAdminNotification } = require('./emailService');
 require('dotenv').config();
 
-const DATA_API_BASE_URL = process.env.DATA_API_BASE_URL;
+// Nexday API Configuration
+const NEXDAY_API_SERVER = 'http://175.110.113.174:8080';
+const NEXDAY_LICENSE_ID = '3561334610044732';
+const NEXDAY_ENDPOINT = `${NEXDAY_API_SERVER}/api/v1/client/${NEXDAY_LICENSE_ID}/endpoints`;
+
 const DATA_API_TIMEOUT = parseInt(process.env.DATA_API_TIMEOUT || '30000');
 const POLLING_ENABLED = process.env.POLLING_ENABLED === 'true';
 const MAX_RETRY_ATTEMPTS = parseInt(process.env.MAX_RETRY_ATTEMPTS || '3');
 
-// In-memory cache for latest data
+// In-memory cache
 const dataCache = {
   dailyPredictions: null,
+  dailyOpportunities: null,
   intradayPredictions: null,
   tradebook: null,
-  lastUpdate: {}
+  symbols: null,
+  lastUpdate: {},
+  signedUrls: null,
+  urlsExpireAt: null
 };
 
-// Track polling failures
+// Track failures
 let consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 3;
 
 /**
- * Fetch data from API endpoint
+ * Get signed CloudFront URLs from Nexday API
  */
-async function fetchData(endpoint) {
+async function refreshSignedUrls() {
   try {
-    const url = `${DATA_API_BASE_URL}/${endpoint}`;
-    logger.info(`Fetching data from: ${url}`);
+    logger.info('Refreshing signed URLs from Nexday API...');
+    
+    const response = await axios.get(NEXDAY_ENDPOINT, {
+      timeout: DATA_API_TIMEOUT,
+      headers: {
+        'Accept': 'application/json'
+      }
+    });
 
-    const response = await axios.get(url, {
+    if (response.status === 200 && response.data && response.data.status === 'success') {
+      dataCache.signedUrls = response.data.endpoints;
+      dataCache.urlsExpireAt = Date.now() + (55 * 60 * 1000);
+      
+      logger.info('Signed URLs refreshed successfully', {
+        expiresIn: response.data.url_expires_in_minutes,
+        license: response.data.client.license_id
+      });
+      
+      consecutiveFailures = 0;
+      return true;
+    }
+
+    throw new Error(`Invalid response: ${response.status}`);
+  } catch (error) {
+    logger.error('Failed to refresh signed URLs', {
+      error: error.message,
+      endpoint: NEXDAY_ENDPOINT
+    });
+    
+    consecutiveFailures++;
+    return false;
+  }
+}
+
+/**
+ * Ensure we have valid signed URLs
+ */
+async function ensureValidUrls() {
+  const now = Date.now();
+  
+  if (!dataCache.signedUrls || !dataCache.urlsExpireAt || now >= dataCache.urlsExpireAt) {
+    await refreshSignedUrls();
+  }
+  
+  return dataCache.signedUrls !== null;
+}
+
+/**
+ * Fetch data from signed CloudFront URL
+ */
+async function fetchDataFromSignedUrl(urlKey, dataType) {
+  try {
+    const hasValidUrls = await ensureValidUrls();
+    if (!hasValidUrls) {
+      throw new Error('No valid signed URLs available');
+    }
+
+    const signedUrl = dataCache.signedUrls[urlKey];
+    if (!signedUrl) {
+      logger.error(`No signed URL found for ${urlKey}`);
+      throw new Error(`No signed URL found for ${urlKey}`);
+    }
+
+    logger.info(`Fetching ${dataType} from signed URL...`);
+
+    const response = await axios.get(signedUrl, {
       timeout: DATA_API_TIMEOUT,
       headers: {
         'Accept': 'application/json'
@@ -37,7 +107,7 @@ async function fetchData(endpoint) {
     });
 
     if (response.status === 200 && response.data) {
-      consecutiveFailures = 0; // Reset failure counter on success
+      consecutiveFailures = 0;
       return {
         success: true,
         data: response.data,
@@ -47,29 +117,12 @@ async function fetchData(endpoint) {
 
     throw new Error(`Invalid response: ${response.status}`);
   } catch (error) {
-    logger.error(`Failed to fetch data from ${endpoint}`, {
+    logger.error(`Failed to fetch ${dataType}`, {
       error: error.message,
-      url: error.config?.url
+      urlKey
     });
 
     consecutiveFailures++;
-
-    // DISABLED: Send admin notification if multiple consecutive failures
-    // Uncomment this when data API endpoints are configured
-    /*
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      await sendAdminNotification(
-        'Data API Unavailable',
-        `Failed to fetch data from ${endpoint} for ${consecutiveFailures} consecutive attempts.`,
-        {
-          endpoint,
-          error: error.message,
-          lastAttempt: new Date().toISOString()
-        }
-      );
-    }
-    */
-
     return {
       success: false,
       error: error.message,
@@ -79,24 +132,78 @@ async function fetchData(endpoint) {
 }
 
 /**
- * Update daily predictions
+ * Update daily predictions and opportunities (merge them)
  */
 async function updateDailyPredictions() {
   logger.info('Updating daily predictions...');
-  const result = await fetchData('daily-predictions.json');
+  
+  // Fetch both predictions and opportunities
+  const [predictionsResult, opportunitiesResult] = await Promise.all([
+    fetchDataFromSignedUrl('predictions_daily', 'daily_predictions'),
+    fetchDataFromSignedUrl('opportunities_daily', 'daily_opportunities')
+  ]);
 
-  if (result.success) {
-    dataCache.dailyPredictions = result.data;
-    dataCache.lastUpdate.dailyPredictions = result.timestamp;
-    logger.logDataSync('daily_predictions', true);
-
-    // Check for notifications
-    checkForNotifications(result.data, 'daily');
-  } else {
-    logger.logDataSync('daily_predictions', false, { error: result.error });
+  if (predictionsResult.success) {
+    const predictions = predictionsResult.data.records || [];
+    logger.info(`Fetched ${predictions.length} daily predictions`);
+    
+    if (predictions.length > 0) {
+      logger.info('Prediction fields:', Object.keys(predictions[0]));
+    }
+    
+    // Store raw predictions
+    dataCache.dailyPredictions = predictions;
   }
 
-  return result;
+  if (opportunitiesResult.success) {
+    const opportunities = opportunitiesResult.data.records || [];
+    logger.info(`Fetched ${opportunities.length} daily opportunities`);
+    
+    if (opportunities.length > 0) {
+      logger.info('Opportunity fields:', Object.keys(opportunities[0]));
+    }
+    
+    // Store raw opportunities
+    dataCache.dailyOpportunities = opportunities;
+  }
+
+  // Merge predictions with opportunities by symbol and target_date
+  if (predictionsResult.success && opportunitiesResult.success) {
+    const predictions = predictionsResult.data.records || [];
+    const opportunities = opportunitiesResult.data.records || [];
+    
+    const merged = predictions.map(pred => {
+      // Find matching opportunity
+      const opp = opportunities.find(o => 
+        o.symbol === pred.symbol && o.target_date === pred.target_date
+      );
+      
+      // Merge the records
+      return {
+        ...pred,
+        ...(opp || {})
+      };
+    });
+    
+    dataCache.dailyPredictions = merged;
+    dataCache.lastUpdate.dailyPredictions = new Date();
+    logger.logDataSync('daily_predictions', true);
+    logger.info(`Daily predictions merged: ${merged.length} records`);
+    
+    if (merged.length > 0) {
+      logger.info('Merged record fields:', Object.keys(merged[0]));
+      logger.info('Sample merged record:', merged[0]);
+    }
+    
+    return { success: true, data: merged };
+  }
+
+  if (!predictionsResult.success) {
+    logger.logDataSync('daily_predictions', false, { error: predictionsResult.error });
+    return predictionsResult;
+  }
+
+  return { success: false, error: 'Failed to fetch opportunities' };
 }
 
 /**
@@ -104,15 +211,20 @@ async function updateDailyPredictions() {
  */
 async function updateIntradayPredictions() {
   logger.info('Updating intraday predictions...');
-  const result = await fetchData('intraday-predictions.json');
+  const result = await fetchDataFromSignedUrl('predictions_15min', 'intraday_predictions');
 
   if (result.success) {
-    dataCache.intradayPredictions = result.data;
+    const records = result.data.records || [];
+    
+    dataCache.intradayPredictions = records;
     dataCache.lastUpdate.intradayPredictions = result.timestamp;
     logger.logDataSync('intraday_predictions', true);
-
-    // Check for notifications
-    checkForNotifications(result.data, 'intraday');
+    
+    logger.info(`Intraday predictions updated: ${records.length} records`);
+    
+    if (records.length > 0) {
+      logger.info(`Sample intraday fields:`, Object.keys(records[0]));
+    }
   } else {
     logger.logDataSync('intraday_predictions', false, { error: result.error });
   }
@@ -125,12 +237,20 @@ async function updateIntradayPredictions() {
  */
 async function updateTradebook() {
   logger.info('Updating tradebook...');
-  const result = await fetchData('tradebook.json');
+  const result = await fetchDataFromSignedUrl('tradebook_daily', 'tradebook');
 
   if (result.success) {
-    dataCache.tradebook = result.data;
+    const records = result.data.records || [];
+    
+    dataCache.tradebook = records;
     dataCache.lastUpdate.tradebook = result.timestamp;
     logger.logDataSync('tradebook', true);
+    
+    logger.info(`Tradebook updated: ${records.length} records`);
+    
+    if (records.length > 0) {
+      logger.info(`Sample tradebook fields:`, Object.keys(records[0]));
+    }
   } else {
     logger.logDataSync('tradebook', false, { error: result.error });
   }
@@ -139,46 +259,13 @@ async function updateTradebook() {
 }
 
 /**
- * Check for notification triggers in data
- */
-function checkForNotifications(data, type) {
-  if (!data || !Array.isArray(data)) return;
-
-  const notifications = [];
-
-  data.forEach(item => {
-    // Check each field for boolean true values (notification triggers)
-    Object.entries(item).forEach(([key, value]) => {
-      // Skip certain fields that are status indicators
-      if (key === 'used' || key === 'active' || key === 'status') return;
-
-      if (value === true) {
-        notifications.push({
-          type,
-          symbol: item.symbol || item.Symbol,
-          field: key,
-          data: item
-        });
-      }
-    });
-  });
-
-  if (notifications.length > 0) {
-    logger.info('Notifications triggered', { count: notifications.length, type });
-    // These notifications will be picked up by clients via the API
-    dataCache[`${type}Notifications`] = notifications;
-  }
-}
-
-/**
  * Poll data with retry logic
  */
 async function pollWithRetry(updateFunction, retryCount = 0) {
   const result = await updateFunction();
 
-  // If no data or error, retry up to MAX_RETRY_ATTEMPTS
   if (!result.success && retryCount < MAX_RETRY_ATTEMPTS) {
-    const retryDelay = 60000; // 1 minute
+    const retryDelay = 60000;
     logger.info(`Retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} in 1 minute...`);
 
     setTimeout(async () => {
@@ -189,7 +276,6 @@ async function pollWithRetry(updateFunction, retryCount = 0) {
 
 /**
  * Initialize polling schedule
- * Polls at :01, :16, :31, :46 of each hour
  */
 function initializePolling() {
   if (!POLLING_ENABLED) {
@@ -198,35 +284,46 @@ function initializePolling() {
   }
 
   logger.info('Initializing data polling service...');
+  logger.info('Nexday API:', NEXDAY_API_SERVER);
+  logger.info('License ID:', NEXDAY_LICENSE_ID);
 
-  // Schedule for :01, :16, :31, :46
-  const schedule = '1,16,31,46 * * * *'; // Every hour at these minutes
+  const dataSchedule = '1,16,31,46 * * * *';
 
-  cron.schedule(schedule, async () => {
-    logger.info('=== Polling cycle started ===');
+  cron.schedule(dataSchedule, async () => {
+    logger.info('=== Data polling cycle started ===');
 
-    // Poll all data sources
     await Promise.all([
       pollWithRetry(updateDailyPredictions),
-      pollWithRetry(updateIntradayPredictions),
-      pollWithRetry(updateTradebook)
+      // pollWithRetry(updateIntradayPredictions),
+      // pollWithRetry(updateTradebook)
     ]);
 
-    logger.info('=== Polling cycle completed ===');
+    logger.info('=== Data polling cycle completed ===');
+  });
+
+  const urlRefreshSchedule = '*/55 * * * *';
+  
+  cron.schedule(urlRefreshSchedule, async () => {
+    logger.info('=== Scheduled URL refresh ===');
+    await refreshSignedUrls();
   });
 
   logger.info('Polling service started successfully');
-  logger.info(`Schedule: ${schedule}`);
+  logger.info(`Data schedule: ${dataSchedule}`);
+  logger.info(`URL refresh schedule: ${urlRefreshSchedule}`);
 
   // Initial fetch on startup
   setTimeout(async () => {
     logger.info('=== Initial data fetch ===');
-    await Promise.all([
-      updateDailyPredictions(),
-      updateIntradayPredictions(),
-      updateTradebook()
-    ]);
-  }, 5000); // 5 second delay after startup
+    
+    const urlsRefreshed = await refreshSignedUrls();
+    
+    if (urlsRefreshed) {
+      await updateDailyPredictions();
+    } else {
+      logger.error('Failed to get signed URLs on startup');
+    }
+  }, 5000);
 }
 
 /**
@@ -259,8 +356,11 @@ function getPollingStatus() {
     enabled: POLLING_ENABLED,
     lastUpdates: dataCache.lastUpdate,
     consecutiveFailures,
+    signedUrlsValid: dataCache.urlsExpireAt ? dataCache.urlsExpireAt > Date.now() : false,
+    signedUrlsExpireAt: dataCache.urlsExpireAt,
     cacheStatus: {
       dailyPredictions: !!dataCache.dailyPredictions,
+      dailyOpportunities: !!dataCache.dailyOpportunities,
       intradayPredictions: !!dataCache.intradayPredictions,
       tradebook: !!dataCache.tradebook
     }
@@ -274,5 +374,6 @@ module.exports = {
   getPollingStatus,
   updateDailyPredictions,
   updateIntradayPredictions,
-  updateTradebook
+  updateTradebook,
+  refreshSignedUrls
 };

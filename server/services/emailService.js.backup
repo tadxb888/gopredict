@@ -1,26 +1,26 @@
-const EmailProviderFactory = require('./email-providers/EmailProviderFactory');
+const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
 require('dotenv').config();
 
-// Initialize email provider based on configuration
-const EMAIL_PROVIDER = process.env.EMAIL_PROVIDER || 'smtp';
-let emailProvider;
+// Create transporter
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD
+  }
+});
 
-try {
-  emailProvider = EmailProviderFactory.createProvider(EMAIL_PROVIDER, process.env);
-  
-  // Verify connection
-  emailProvider.verify().then(isValid => {
-    if (isValid) {
-      logger.info(`Email provider (${emailProvider.getName()}) ready to send emails`);
-    } else {
-      logger.warn(`Email provider (${emailProvider.getName()}) verification failed`);
-    }
-  });
-} catch (error) {
-  logger.error('Failed to initialize email provider', { error: error.message });
-  throw error;
-}
+// Verify connection
+transporter.verify((error) => {
+  if (error) {
+    logger.error('SMTP connection failed:', error);
+  } else {
+    logger.info('SMTP server ready to send emails');
+  }
+});
 
 /**
  * Send magic link email
@@ -29,7 +29,8 @@ async function sendMagicLink(email, token, firstName = null) {
   const magicLink = `${process.env.APP_BASE_URL}/auth/verify?token=${token}`;
   const name = firstName || email.split('@')[0];
 
-  const emailOptions = {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || process.env.SMTP_USER,
     to: email,
     subject: 'Your GoPredict Login Link',
     html: `
@@ -101,13 +102,14 @@ async function sendMagicLink(email, token, firstName = null) {
     `
   };
 
-  const result = await emailProvider.sendEmail(emailOptions);
-
-  if (!result.success) {
-    throw new Error(result.error || 'Failed to send email');
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    logger.info('Magic link sent', { email, messageId: info.messageId });
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    logger.error('Failed to send magic link', { email, error: error.message });
+    throw new Error('Failed to send email');
   }
-
-  return result;
 }
 
 /**
@@ -121,7 +123,8 @@ async function sendAdminNotification(subject, message, details = {}) {
     return;
   }
 
-  const emailOptions = {
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || process.env.SMTP_USER,
     to: adminEmail,
     subject: `[GoPredict Alert] ${subject}`,
     html: `
@@ -167,13 +170,13 @@ async function sendAdminNotification(subject, message, details = {}) {
     `
   };
 
-  const result = await emailProvider.sendEmail(emailOptions);
-
-  if (result.success) {
-    logger.info('Admin notification sent', { subject, messageId: result.messageId });
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    logger.info('Admin notification sent', { subject, messageId: info.messageId });
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    logger.error('Failed to send admin notification', { subject, error: error.message });
   }
-
-  return result;
 }
 
 module.exports = {

@@ -1,136 +1,268 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AgGridReact } from 'ag-grid-react';
-import { dataAPI } from '../services/api';
+import nexdayApi from '../services/nexdayApi';
+import { transformIntradayPredictions } from '../utils/dataTransformers';
 import toast from 'react-hot-toast';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
+import '../components/Grid/gridStyles.css';
 
 export default function IntradayPredictions() {
   const [rowData, setRowData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [timeframe, setTimeframe] = useState('all');
-  const [symbolFilter, setSymbolFilter] = useState('');
+  const [timeframe, setTimeframe] = useState('15min');
+  const [lastUpdate, setLastUpdate] = useState(null);
 
   const columnDefs = [
-    { field: 'predicted_date', headerName: 'predicted date', sortable: true, filter: 'agTextColumnFilter', flex: 1, minWidth: 100 },
-    { field: 'target_time', headerName: 'target_time', sortable: true, filter: 'agTextColumnFilter', flex: 1, minWidth: 90 },
-    { field: 'Symbol', headerName: 'Symbol', sortable: true, filter: 'agTextColumnFilter', flex: 1, minWidth: 80 },
-    { field: 'Description', headerName: 'Description', sortable: true, filter: 'agTextColumnFilter', flex: 1.5, minWidth: 100 },
-    { field: 'predicted_high', headerName: 'predicted_high', sortable: true, filter: 'agNumberColumnFilter', flex: 1, minWidth: 90 },
-    { field: 'predicted_trend', headerName: 'predicted_trend', sortable: true, filter: 'agTextColumnFilter', flex: 1, minWidth: 90 },
-    { field: 'predicted_low', headerName: 'predicted_low', sortable: true, filter: 'agNumberColumnFilter', flex: 1, minWidth: 90 },
-    { field: 'predicted_strength', headerName: 'predicted_strength', sortable: true, filter: 'agNumberColumnFilter', flex: 1, minWidth: 100 },
-    { field: 'predicted_range', headerName: 'predicted_range', sortable: true, filter: 'agNumberColumnFilter', flex: 1, minWidth: 100 },
-    { field: 'predicted_trading_range', headerName: 'predicted_trading_range', sortable: true, filter: 'agNumberColumnFilter', flex: 1.2, minWidth: 120 },
-    { field: 'momentum', headerName: 'momentum', sortable: true, filter: 'agNumberColumnFilter', flex: 1, minWidth: 80 }
+    { 
+      field: 'target_time', 
+      headerName: 'target_time', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 180,
+      pinned: 'left',
+      valueFormatter: params => {
+        if (!params.value) return '';
+        const date = new Date(params.value);
+        return date.toLocaleString();
+      }
+    },
+    { 
+      field: 'symbol', 
+      headerName: 'Symbol', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 100,
+      pinned: 'left'
+    },
+    { 
+      field: 'Description', 
+      headerName: 'Description', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 200 
+    },
+    { 
+      field: 'predicted_high', 
+      headerName: 'predicted_high', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 140,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_low', 
+      headerName: 'predicted_low', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 140,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_close', 
+      headerName: 'predicted_close', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 150,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_trend', 
+      headerName: 'predicted_trend', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 150,
+      valueFormatter: params => params.value?.toFixed(2),
+      cellStyle: params => {
+        if (params.value > 0.5) return { color: '#50F178' };
+        if (params.value < -0.5) return { color: '#FF5555' };
+        return { color: '#F1FA8C' };
+      }
+    },
+    { 
+      field: 'predicted_strength', 
+      headerName: 'predicted_strength', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 160,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_range', 
+      headerName: 'predicted_range', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 150,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_midpoint', 
+      headerName: 'midpoint', 
+      sortable: true, 
+      filter: 'agNumberColumnFilter', 
+      width: 130,
+      valueFormatter: params => params.value?.toFixed(2)
+    },
+    { 
+      field: 'predicted_trading_range', 
+      headerName: 'trading_range', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 160 
+    },
+    { 
+      field: 'momentum', 
+      headerName: 'momentum', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 130 
+    },
+    { 
+      field: 'predicted_high_touched', 
+      headerName: 'high_touched', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 140,
+      valueFormatter: params => params.value ? 'Yes' : 'No',
+      cellStyle: params => params.value ? { color: '#50F178' } : {}
+    },
+    { 
+      field: 'predicted_low_touched', 
+      headerName: 'low_touched', 
+      sortable: true, 
+      filter: 'agTextColumnFilter', 
+      width: 140,
+      valueFormatter: params => params.value ? 'Yes' : 'No',
+      cellStyle: params => params.value ? { color: '#50F178' } : {}
+    }
   ];
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const response = await dataAPI.getIntradayPredictions();
-      setRowData(response.data.data || []);
-      setLoading(false);
+      setLoading(true);
       
-      if (response.data.notifications?.length > 0) {
-        toast.success(`${response.data.notifications.length} new alerts!`);
-      }
+      const response = await nexdayApi.getIntradayPredictions(timeframe);
+      const transformed = transformIntradayPredictions(response);
+      
+      setRowData(transformed);
+      setLastUpdate(new Date());
+      
+      console.log(`Intraday predictions (${timeframe}) loaded:`, transformed.length, 'records');
+      
     } catch (error) {
-      console.error('Failed to fetch intraday predictions:', error);
-      toast.error('Failed to load predictions');
+      console.error('Error fetching intraday predictions:', error);
+      toast.error('Failed to load intraday predictions');
+    } finally {
       setLoading(false);
     }
-  };
+  }, [timeframe]);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 900000);
-    return () => clearInterval(interval);
-  }, []);
+    
+    // Polling logic
+    const getNextPollDelay = () => {
+      const now = new Date();
+      const currentMinute = now.getMinutes();
+      const pollMinutes = [1, 16, 31, 46];
+      
+      let nextPollMinute = pollMinutes.find(m => m > currentMinute);
+      if (!nextPollMinute) {
+        nextPollMinute = pollMinutes[0];
+      }
+      
+      const nextPollTime = new Date(now);
+      if (nextPollMinute <= currentMinute) {
+        nextPollTime.setHours(nextPollTime.getHours() + 1);
+      }
+      nextPollTime.setMinutes(nextPollMinute, 0, 0);
+      
+      return nextPollTime.getTime() - now.getTime();
+    };
+    
+    const scheduleNextPoll = () => {
+      const delay = getNextPollDelay();
+      setTimeout(() => {
+        fetchData();
+        scheduleNextPoll();
+      }, delay);
+    };
+    
+    scheduleNextPoll();
+  }, [fetchData]);
 
-  const filteredData = rowData.filter(row => {
-    const matchesSymbol = !symbolFilter || 
-      row.Symbol?.toLowerCase().includes(symbolFilter.toLowerCase());
-    const matchesTimeframe = timeframe === 'all' || row.target_time === timeframe;
-    return matchesSymbol && matchesTimeframe;
-  });
-
-  const handleSymbolSearch = (e) => {
-    if (e.key === 'Enter') {
-      setSymbolFilter(e.target.value);
-    }
+  const defaultColDef = {
+    resizable: true,
+    sortable: true,
+    filter: true
   };
 
+  const timeframes = ['15min', '30min', '1hour', '2hour'];
+
   return (
-    <div style={{ 
-      height: 'calc(100vh - 110px)', 
-      width: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden'
-    }}>
-      <div style={{ 
-        padding: '16px', 
-        borderBottom: '1px solid #429356',
-        flexShrink: 0
-      }}>
-        <div style={{ display: 'flex', gap: '16px' }}>
-          <select
-            value={timeframe}
-            onChange={(e) => setTimeframe(e.target.value)}
-            style={{ 
-              padding: '8px 16px', 
-              backgroundColor: '#21222C', 
-              border: '1px solid #429356', 
-              color: '#68FF8E',
-              borderRadius: '4px'
+    <div style={{ padding: '20px', height: 'calc(100vh - 120px)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '15px', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ color: '#68FF8E', margin: 0, marginBottom: '5px' }}>Intraday Predictions</h1>
+          {lastUpdate && (
+            <p style={{ color: '#888', fontSize: '12px', margin: 0 }}>
+              Last updated: {lastUpdate.toLocaleString()}
+            </p>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {/* Timeframe selector */}
+          <div style={{ display: 'flex', gap: '5px' }}>
+            {timeframes.map(tf => (
+              <button
+                key={tf}
+                onClick={() => setTimeframe(tf)}
+                style={{
+                  padding: '8px 16px',
+                  background: timeframe === tf ? '#50F178' : '#429356',
+                  color: timeframe === tf ? '#21222C' : 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: timeframe === tf ? 'bold' : 'normal'
+                }}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            style={{
+              padding: '8px 16px',
+              background: '#429356',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: loading ? 0.6 : 1
             }}
           >
-            <option value="all">Select timeframe...</option>
-            <option value="09:30">09:30</option>
-            <option value="10:00">10:00</option>
-            <option value="10:30">10:30</option>
-            <option value="11:00">11:00</option>
-            <option value="13:00">13:00</option>
-            <option value="14:00">14:00</option>
-            <option value="15:00">15:00</option>
-          </select>
-
-          <input
-            type="text"
-            placeholder="type symbol and press enter..."
-            onKeyPress={handleSymbolSearch}
-            style={{ 
-              flex: 1, 
-              padding: '8px 16px', 
-              backgroundColor: '#21222C', 
-              border: '1px solid #429356', 
-              color: '#68FF8E',
-              borderRadius: '4px'
-            }}
-          />
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
         </div>
       </div>
 
-      <div style={{ flex: 1, padding: '16px', minHeight: 0 }}>
-        {loading ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-            <div style={{ color: '#68FF8E', fontSize: '1.25rem' }}>Loading predictions...</div>
-          </div>
-        ) : (
-          <div className="ag-theme-alpine-dark" style={{ height: '100%', width: '100%' }}>
-            <AgGridReact
-              rowData={filteredData}
-              columnDefs={columnDefs}
-              defaultColDef={{
-                resizable: true,
-                sortable: true,
-                filter: true
-              }}
-              pagination={true}
-              paginationPageSize={50}
-            />
-          </div>
-        )}
+      <div className="ag-theme-gopredict" style={{ height: 'calc(100% - 60px)', width: '100%' }}>
+        <AgGridReact
+          rowData={rowData}
+          columnDefs={columnDefs}
+          defaultColDef={defaultColDef}
+          animateRows={true}
+          rowSelection="multiple"
+          pagination={true}
+          paginationPageSize={50}
+          paginationPageSizeSelector={[25, 50, 100, 200]}
+          loading={loading}
+        />
       </div>
     </div>
   );
